@@ -87,15 +87,10 @@ end
 
 else # 5-arg mul! is available for matrices
     for Atype in (AbstractVector, AbstractMatrix)
-        @eval Base.@propagate_inbounds function LinearAlgebra.mul!(y::$Atype, A::LinearCombination{T,As}, x::$Atype,
-                    α::Number=true, β::Number=false) where {T, As<:Tuple{Vararg{FreeMap}}}
-            @boundscheck check_dim_mul(y, A, x)
-            return @inbounds _freelincombmul!(y, A, x, α, β)
-        end
         @eval Base.@propagate_inbounds function LinearAlgebra.mul!(y::$Atype, A::LinearCombination, x::$Atype,
                             α::Number=true, β::Number=false)
             @boundscheck check_dim_mul(y, A, x)
-            return @inbounds _lincombmul!(y, A, x, α, β)
+            return _lincombmul!(y, A, x, α, β)
         end
     end
 end # VERSION
@@ -104,10 +99,11 @@ end # VERSION
 # multiplication helper functions
 ############
 
-@inline function _freelincombmul!(y, A::LinearCombination, x, α::Number, β::Number)
-    mul!(y, first(A.maps), x, α, β)
-    for Ai in Base.tail(A.maps)
-        mul!(y, Ai, x, α, true)
+@inline function _lincombmul!(y, A::LinearCombination{<:Any,<:Tuple{Vararg{FreeMap}}}, x,
+                                α::Number, β::Number)
+    mul!(y, A.maps[1], x, α, β)
+    @inbounds for n in 2:length(A.maps)
+        mul!(y, A.maps[n], x, α, true)
     end
     return y
 end
@@ -117,7 +113,8 @@ end
     l = length(A.maps)
     if l>1
         z = similar(y)
-        for An in Base.tail(A.maps)
+        for n in 2:l
+            @inbounds An = A.maps[n]
             if An isa FreeMap
                 mul!(y, An, x, α, true)
             else
