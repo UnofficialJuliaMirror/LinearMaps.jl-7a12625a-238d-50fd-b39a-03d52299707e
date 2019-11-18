@@ -62,6 +62,10 @@ LinearAlgebra.transpose(A::LinearCombination) = LinearCombination{eltype(A)}(map
 LinearAlgebra.adjoint(A::LinearCombination)   = LinearCombination{eltype(A)}(map(adjoint, A.maps))
 
 # multiplication with vectors
+
+# map types that have an allocation-free 5-arg mul! implementation
+const FreeMap = Union{MatrixMap,UniformScalingMap}
+
 if VERSION < v"1.3.0-alpha.115"
 
 Base.@propagate_inbounds function LinearAlgebra.mul!(y::AbstractVector, A::LinearCombination, x::AbstractVector,
@@ -82,73 +86,45 @@ Base.@propagate_inbounds function LinearAlgebra.mul!(y::AbstractVector, A::Linea
 end
 
 else # 5-arg mul! is available for matrices
-
-# map types that have an allocation-free 5-arg mul! implementation
-const FreeMap = Union{MatrixMap,UniformScalingMap}
-
-Base.@propagate_inbounds function LinearAlgebra.mul!(y::AbstractVector, A::LinearCombination{T,As}, x::AbstractVector,
+    for Atype in (AbstractVector, AbstractMatrix)
+        @eval Base.@propagate_inbounds function LinearAlgebra.mul!(y::$Atype, A::LinearCombination{T,As}, x::$Atype,
                     α::Number=true, β::Number=false) where {T, As<:Tuple{Vararg{FreeMap}}}
-    @boundscheck check_dim_mul(y, A, x)
-    @inbounds begin
-        mul!(y, first(A.maps), x, α, β)
-        for Ai in Base.tail(A.maps)
-            mul!(y, Ai, x, α, true)
+            @boundscheck check_dim_mul(y, A, x)
+            return @inbounds _freelincombmul!(y, A, x, α, β)
         end
+        @eval Base.@propagate_inbounds function LinearAlgebra.mul!(y::$Atype, A::LinearCombination, x::$Atype,
+                            α::Number=true, β::Number=false)
+            @boundscheck check_dim_mul(y, A, x)
+            return @inbounds _lincombmul!(y, A, x, α, β)
+        end
+    end
+end # VERSION
+
+############
+# multiplication helper functions
+############
+
+@inline function _freelincombmul!(y, A::LinearCombination, x, α::Number, β::Number)
+    mul!(y, first(A.maps), x, α, β)
+    for Ai in Base.tail(A.maps)
+        mul!(y, Ai, x, α, true)
     end
     return y
 end
-Base.@propagate_inbounds function LinearAlgebra.mul!(y::AbstractVector, A::LinearCombination, x::AbstractVector,
-                    α::Number=true, β::Number=false)
-    @boundscheck check_dim_mul(y, A, x)
-    @inbounds begin
-        mul!(y, first(A.maps), x, α, β)
-        l = length(A.maps)
-        if l>1
-            z = similar(y)
-            for An in Base.tail(A.maps)
-                if An isa FreeMap
-                    mul!(y, An, x, α, true)
-                else
-                    mul!(z, An, x, α, false)
-                    y .+= z
-                end
+
+@inline function _lincombmul!(y, A::LinearCombination, x, α::Number, β::Number)
+    mul!(y, first(A.maps), x, α, β)
+    l = length(A.maps)
+    if l>1
+        z = similar(y)
+        for An in Base.tail(A.maps)
+            if An isa FreeMap
+                mul!(y, An, x, α, true)
+            else
+                mul!(z, An, x, α, false)
+                y .+= z
             end
         end
     end
     return y
 end
-
-# function LinearAlgebra.mul!(y::AbstractVector, A::LinearCombination{T,As}, x::AbstractVector, α::Number=true, β::Number=false) where {T, As<:Tuple{Vararg{FreeMap}}}
-#     length(y) == size(A, 1) || throw(DimensionMismatch("mul!"))
-#     if isone(α)
-#         iszero(β) && (A_mul_B!(y, A, x); return y)
-#         !isone(β) && rmul!(y, β)
-#     elseif iszero(α)
-#         iszero(β) && (fill!(y, zero(eltype(y))); return y)
-#         isone(β) && return y
-#         # β != 0, 1
-#         rmul!(y, β)
-#         return y
-#     else # α != 0, 1
-#         if iszero(β)
-#             A_mul_B!(y, A, x)
-#             rmul!(y, α)
-#             return y
-#         elseif !isone(β)
-#             rmul!(y, β)
-#         end # β-cases
-#     end # α-cases
-#
-#     for An in A.maps
-#         mul!(y, An, x, α, true)
-#     end
-#     return y
-# end
-
-end # VERSION
-
-Base.@propagate_inbounds LinearAlgebra.mul!(y::AbstractVector, A::TransposeMap{<:Any,<:LinearCombination}, x::AbstractVector,
-                α::Number=true, β::Number=false) = mul!(y, transpose(A), x, α, β)
-
-Base.@propagate_inbounds LinearAlgebra.mul!(y::AbstractVector, A::AdjointMap{<:Any,<:LinearCombination}, x::AbstractVector,
-                α::Number=true, β::Number=false) = mul!(y, adjoint(A), x, α, β)
